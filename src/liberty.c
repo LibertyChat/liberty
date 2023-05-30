@@ -41,6 +41,7 @@ bool initialized;
 sqlite3* maindb;
 
 void segfault(int sig){
+    close_proc();
     fprintf(stderr,
             "###################################################\n"
             "An error has occurred within LIBERTY:\n"
