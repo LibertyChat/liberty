@@ -77,7 +77,7 @@ bool initialize_liberty_database(){
     sqlite3_open(dbfilepath, &maindb);
     char* ErrorMsg={0};
     sqlite3_exec(maindb, 
-                 "CREATE TABLE SERVER_LIST("
+                "CREATE TABLE SERVER_LIST("
                     "NAME     CHAR(50),"
                     "ADDRESS  CHAR(128),"
                     "PORT     INT"
