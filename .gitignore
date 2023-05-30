@@ -1,0 +1,10 @@
+test*
+temp*
+build*
+host*
+*.o
+*.a
+*.so
+*.in
+configure
+Makefile
