@@ -12,17 +12,16 @@ extern "C"{
 
 #include "liberty.h"
 
-#include <stdio.h> // fprintf
-#include <stdlib.h> // NULL
+#include <stdio.h> // fprintf, FILE
+#include <stdlib.h> // NULL, free
 #include <string.h> // malloc, strcpy, strlen, strcat
 #include <strings.h> // bzero
 #include <unistd.h> // getenv
 #include <assert.h> // assert
 #include <sqlite3.h> /* for storing user data */
 #include <sys/stat.h> // mkdir
-
+#include <time.h> // tm, time_t, localtime, time
 #include <sys/signal.h> // SIGSEGV, sigaction, sig_atomic_t, sigemptyset
-
 #include <ncurses/ncurses.h> /* for visual */
 #include <locale.h> // set_locale, LC_ALL
 
@@ -36,13 +35,16 @@ char* configroot;
 char* configdir;
 char* dbfilepath;
 
+static char* logdir;
+static char* logfilepath;
+static FILE* logfile;
+
 bool initialized;
 
 sqlite3* maindb;
 
 void segfault(int sig){
-    close_proc();
-    fprintf(stderr,
+    fprintf(logfile,
             "###################################################\n"
             "An error has occurred within LIBERTY:\n"
             "    Signal: 11\n"
@@ -50,6 +52,8 @@ void segfault(int sig){
             "Sorry! Liberty has to exit now!\n"
             "###################################################\n"
             );
+    fprintf(stderr, "Segmentation Fault, Please check the logfile at %s", logfilepath);
+    close_proc();
 }
 
 bool initialize_liberty_database(){
@@ -59,7 +63,7 @@ bool initialize_liberty_database(){
     strcat(configroot, "/.config");
 
     if(access(configroot, F_OK))
-      assert(mkdir(configroot, DEFAULT_PERMISSION)==-1);
+      assert(mkdir(configroot, DEFAULT_PERMISSION)!=-1);
 
     configdir=(char*)malloc((strlen(configroot)+1+strlen("/liberty"))*sizeof(char));
     bzero(configdir, strlen(configroot)+strlen("liberty")+1);
@@ -67,12 +71,49 @@ bool initialize_liberty_database(){
     strcat(configdir, "/liberty");
 
     if(access(configdir, F_OK))
-      assert(mkdir(configdir, DEFAULT_PERMISSION)==-1);
+      assert(mkdir(configdir, DEFAULT_PERMISSION)!=-1);
 
     dbfilepath=(char*)malloc((strlen(configdir)+1+strlen("/userdata.db"))*sizeof(char));
     bzero(dbfilepath, strlen(configdir)+strlen("/userdata.db")+1);
     strcpy(dbfilepath, configdir);
     strcat(dbfilepath, "/userdata.db");
+
+    logdir=(char*)malloc((strlen(configdir)+1+strlen("/logs"))*sizeof(char));
+    bzero(logdir, strlen(configdir)+strlen("/logs")+1);
+    strcpy(logdir, configdir);
+    strcat(logdir, "/logs");
+
+    if(access(logdir, F_OK))
+      assert(mkdir(logdir, DEFAULT_PERMISSION)!=-1);
+
+    struct tm* _timer;
+    time_t* time_s=(time_t*)malloc(sizeof(time_t));
+    time(time_s);
+    _timer=localtime(time_s);
+    free(time_s);
+
+    logfilepath=(char*)malloc((strlen(logdir)+44)*sizeof(char));
+    bzero(logfilepath, 43+strlen(logdir));
+    int count=0;
+    do{
+        if(count==0)
+          snprintf(logfilepath, 44+strlen(logdir), "%s/liberty-%04d-%02d-%02d-%02d:%02d:%02d.log", logdir, 
+                   _timer->tm_year+1900, _timer->tm_mon+1, _timer->tm_mday, _timer->tm_hour,
+                   _timer->tm_min, _timer->tm_sec);
+        else
+          snprintf(logfilepath, 44+strlen(logdir), "%s/liberty-%04d-%02d-%02d-%02d:%02d:%02d-%d.log", logdir, 
+                   _timer->tm_year+1900, _timer->tm_mon+1, _timer->tm_mday, _timer->tm_hour,
+                   _timer->tm_min, _timer->tm_sec, count);
+        if(access(logfilepath, F_OK)==0){
+            count++;
+            continue;
+        }
+        else
+          break;
+    }while(1);
+
+    logfile=fopen(logfilepath, "w");
+    assert(logfile!=NULL);
 
     sqlite3_open(dbfilepath, &maindb);
     char* ErrorMsg={0};
@@ -83,7 +124,7 @@ bool initialize_liberty_database(){
                     "PORT     INT"
                 ");"
                  , NULL, NULL, &ErrorMsg);
-    fprintf(stderr, "log: sql create: %s\n", ErrorMsg);
+    fprintf(logfile, "SQLite3 Create: %s\n", ErrorMsg);
     return true;
 }
 
@@ -107,11 +148,15 @@ void close_proc(){
     free(configroot);
     free(configdir);
     free(dbfilepath);
+    free(logdir);
+    free(logfilepath);
     sqlite3_close(maindb);
     echo();
     nocbreak();
     curs_set(1);
     endwin();
+    fprintf(logfile, "- Program Exit\n");
+    fclose(logfile);
 }
 
 static WINDOW* createwin(int h, int w, int sy, int sx/*, int add_border*/){
@@ -119,11 +164,12 @@ static WINDOW* createwin(int h, int w, int sy, int sx/*, int add_border*/){
     newwindow=newwin(h, w, sy, sx);
     box(newwindow, 0, 0);
     wrefresh(newwindow);
+    fprintf(logfile, "Window Created, size=%dx%d, position=(%d,%d)\n", w, h, sx, sy);
     return newwindow;
 }
 
 int quit_proc(){
-    WINDOW* menu=createwin(7, 27, LINES/2-3, COLS/2-(27/2)/*  true*/);
+    WINDOW* menu=createwin(7, 27, LINES/2-3, COLS/2-(27/2)/*, true*/);
     wmove(menu, 2, 4);
     wprintw(menu, "Are you sure exit?");
     wmove(menu, 4, 5);
@@ -135,11 +181,19 @@ int quit_proc(){
     bool breakblock=false;
     bool quit_prog=false;
     while(1){
-        if(quit_prog)
-          return true;
-        if(breakblock)
-          return false;
+        if(quit_prog){
+            fprintf(logfile, "Menu Exit Called\n");
+            return true;
+        }
+        if(breakblock){
+            fprintf(logfile, "Menu Exit Canceled\n");
+            return false;
+        }
         ch=getch();
+        if(ch!=-1)
+          fprintf(logfile, "Keypad Issue: %d\n", ch);
+        else
+          continue;
         switch(ch){
           case KEY_LEFT:
             if(choice==2){
@@ -168,6 +222,12 @@ int quit_proc(){
                 breakblock=true;
             }
             break;
+          case 27:
+            wclear(menu);
+            wrefresh(menu);
+            delwin(menu);
+            breakblock=true;
+            break;
         }
     }
     return false;
@@ -189,6 +249,7 @@ static void listen_keypad(){
     while(1){
         wrefresh(mainwin);
         if(LINES!=oh||COLS!=ow){
+            fprintf(logfile, "Screen Resized, Now is: %dx%d\n", COLS, LINES);
             oh=LINES;
             ow=COLS;
             wclear(mainwin);
@@ -208,8 +269,13 @@ static void listen_keypad(){
         if(quit)
           break;
         ch=getch();
+        if(ch!=-1)
+          fprintf(logfile, "Keypad Issue: %d\n", ch);
+        else
+          continue;
         switch(ch){
           case 27:
+            fprintf(logfile, "Page: Menu\n");
             if(quit_proc())
               quit=true;
             break;
