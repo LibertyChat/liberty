@@ -5,6 +5,9 @@ host*
 *.o
 *.a
 *.so
-*.in
-configure
 Makefile
+config.h
+*~
+config.status
+*.log
+*cache

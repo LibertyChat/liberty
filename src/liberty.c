@@ -12,17 +12,22 @@ extern "C"{
 
 #include "liberty.h"
 
-#include <stdio.h> // fprintf, FILE
-#include <stdlib.h> // NULL, free
+#include <stdio.h> // fprintf, FILE, sprintf
+#include <stdlib.h> // NULL, free, _Exit
 #include <string.h> // malloc, strcpy, strlen, strcat
 #include <strings.h> // bzero
 #include <unistd.h> // getenv
 #include <assert.h> // assert
-#include <sqlite3.h> /* for storing user data */
-#include <sys/stat.h> // mkdir
+#include <sqlite3.h> // sqlite3_open, sqlite3_close, sqlite3_exec
+#include <sys/stat.h> // mkdir, S_IRWXU, S_IRWXG, S_IROTH, S_IXOTH
 #include <time.h> // tm, time_t, localtime, time
 #include <sys/signal.h> // SIGSEGV, sigaction, sig_atomic_t, sigemptyset
-#include <ncurses/ncurses.h> /* for visual */
+#include <ncurses/ncurses.h> // initscr, start_color, timeout, set_escdelay,
+                             // init_pair, newwin, delwin, box, mvwprintw,
+                             // mvprintw, mvwchgat, getch, WINDOW, noecho,
+                             // nocbreak, cbreak, echo, LINES, COLS, curs_set,
+                             // keypad
+#include <panel.h> // PANEL, new_panel, move_panel, show_panel, update_panel
 #include <locale.h> // set_locale, LC_ALL
 
 #define DEFAULT_PERMISSION S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH
@@ -52,8 +57,9 @@ void segfault(int sig){
             "Sorry! Liberty has to exit now!\n"
             "###################################################\n"
             );
-    fprintf(stderr, "Segmentation Fault, Please check the logfile at %s", logfilepath);
     close_proc();
+    fprintf(stderr, "Segmentation Fault, Please check the logfile at %s\n", logfilepath);
+    _Exit(1);
 }
 
 bool initialize_liberty_database(){
@@ -159,33 +165,44 @@ void close_proc(){
     fclose(logfile);
 }
 
-static WINDOW* createwin(int h, int w, int sy, int sx/*, int add_border*/){
+static WINDOW* createwin(int h, int w, int sy, int sx, char* name){
     WINDOW* newwindow;
     newwindow=newwin(h, w, sy, sx);
     box(newwindow, 0, 0);
     wrefresh(newwindow);
-    fprintf(logfile, "Window Created, size=%dx%d, position=(%d,%d)\n", w, h, sx, sy);
+    fprintf(logfile, "Window Created, name=%s, size=%dx%d, position=(%d,%d)\n", name, w, h, sx, sy);
     return newwindow;
 }
 
+static void deletewin(WINDOW* win, char* name){
+    delwin(win);
+    fprintf(logfile, "Delete Window, %s deleted\n", name);
+}
+
 int quit_proc(){
-    WINDOW* menu=createwin(7, 27, LINES/2-3, COLS/2-(27/2)/*, true*/);
+    WINDOW* menu=createwin(7, 27, LINES/2-3, COLS/2-(27/2), "Menu");
     wmove(menu, 2, 4);
     wprintw(menu, "Are you sure exit?");
     wmove(menu, 4, 5);
     wprintw(menu, "[Yes]      [No]");
     int choice=2;
     mvwchgat(menu, 4, 16, 4, A_BOLD, 2, NULL);
+    mvwprintw(menu, 0, 2, " Menu ");
     wrefresh(menu);
+    PANEL* MENU=new_panel(menu);
     int ch=0;
     bool breakblock=false;
     bool quit_prog=false;
     while(1){
+        move_panel(MENU, LINES/2-3, COLS/2-(27/2));
+        update_panels();
         if(quit_prog){
+            del_panel(MENU);
             fprintf(logfile, "Menu Exit Called\n");
             return true;
         }
         if(breakblock){
+            del_panel(MENU);
             fprintf(logfile, "Menu Exit Canceled\n");
             return false;
         }
@@ -214,7 +231,6 @@ int quit_proc(){
           case 10:
             wclear(menu);
             wrefresh(menu);
-            delwin(menu);
             if(choice==1){
                 quit_prog=true;
             }
@@ -225,7 +241,6 @@ int quit_proc(){
           case 27:
             wclear(menu);
             wrefresh(menu);
-            delwin(menu);
             breakblock=true;
             break;
         }
@@ -240,12 +255,23 @@ static void listen_keypad(){
     bool quit=false;
     int oh, ow;
     flushinp();
-    WINDOW* serverlist=createwin(LINES-1, 30, 1, 0);
+    WINDOW* serverlist=createwin(LINES-1, 30, 1, 0, "Server List");
     box(serverlist, 0, 0);
-    WINDOW* chatwin=createwin(LINES-1, COLS-30, 1, 30);
+    WINDOW* chatwin=createwin(LINES-4, COLS-30, 1, 30, "Chat Window");
     box(chatwin, 0, 0);
     wrefresh(serverlist);
     wrefresh(chatwin);
+    PANEL* SL=new_panel(serverlist);
+    PANEL* CW=new_panel(chatwin);
+    WINDOW* TextInput=createwin(3, COLS-30, LINES-3, 30, "Text Input Window");
+    box(TextInput, 0, 0);
+    wrefresh(TextInput);
+    PANEL* TI=new_panel(TextInput);
+    show_panel(TI);
+    bottom_panel(TI);
+    move_panel(TI, LINES-3, 30);
+    wrefresh(TI->win);
+    update_panels();
     while(1){
         wrefresh(mainwin);
         if(LINES!=oh||COLS!=ow){
@@ -257,14 +283,29 @@ static void listen_keypad(){
             mvwprintw(mainwin, 0, 0, "Liberty - Current Server: %s\n", server_choice);
             mvwchgat(mainwin, 0, 0, COLS, A_BOLD, 3, NULL);
             wrefresh(mainwin);
+
+            move_panel(SL, 1, 0);
             wresize(serverlist, LINES-1, 30);
             wclear(serverlist);
             box(serverlist, 0, 0);
+            mvwprintw(serverlist, 0, 2, " Server List ");
             wrefresh(serverlist);
-            wresize(chatwin, LINES-1, COLS-30);
+
+            move_panel(TI, LINES-3, 30);
+            wresize(TI->win, 3, COLS-30);
+            wclear(TI->win);
+            box(TI->win, 0, 0);
+            mvwprintw(TI->win, 0, 2, " Edit Message ");
+            wrefresh(TI->win);
+
+            move_panel(CW, 1, 30);
+            wresize(chatwin, LINES-4, COLS-30);
             wclear(chatwin);
             box(chatwin, 0, 0);
+            mvwprintw(chatwin, 0, 2, " Free Chat ");
             wrefresh(chatwin);
+
+            update_panels();
         }
         if(quit)
           break;
